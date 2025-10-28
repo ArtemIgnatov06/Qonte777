@@ -870,49 +870,104 @@ app.post('/api/register-email/finish', async (req, res) => {
 });
 
 /* ===== Google OAuth + Email OTP ===== */
+/* ===== Google OAuth + Email OTP (ИСПРАВЛЕННАЯ ВЕРСИЯ) ===== */
 app.post('/api/auth/google/start', async (req, res) => {
+  console.log('🔐 [Google Start] Request from origin:', req.headers.origin);
+  console.log('🔐 [Google Start] Body:', req.body);
+  
   try {
     const { id_token } = req.body;
-    if (!id_token) return res.status(400).json({ error: 'id_token is required' });
+    
+    if (!id_token) {
+      console.warn('❌ [Google Start] Missing id_token');
+      return res.status(400).json({ error: 'id_token is required' });
+    }
+
+    if (!process.env.GOOGLE_CLIENT_ID) {
+      console.error('❌ [Google Start] GOOGLE_CLIENT_ID not set!');
+      return res.status(500).json({ error: 'Google auth not configured' });
+    }
+
+    console.log('🔍 [Google Start] Verifying token...');
     const payload = await verifyGoogleIdToken(id_token);
     const email = payload.email;
-    if (!email) return res.status(400).json({ error: 'Email не найден в токене' });
+    
+    if (!email) {
+      console.warn('❌ [Google Start] No email in token payload');
+      return res.status(400).json({ error: 'Email не найден в токене' });
+    }
+
+    console.log('✅ [Google Start] Token verified for:', email);
 
     const code = random6();
     const hash = sha256(code);
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
     await db.query(
-      SQL.insert_general_04,
+      `INSERT INTO email_otps (email, code_hash, expires_at)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE code_hash = VALUES(code_hash), expires_at = VALUES(expires_at)`,
       [email, hash, expiresAt]
     );
 
+    console.log('📧 [Google Start] Sending OTP to:', email, '| Code:', code);
     await sendOtpEmail(email, code);
+    
+    console.log('✅ [Google Start] Success for:', email);
     res.json({ ok: true, email });
   } catch (e) {
-    console.error('google/start error:', e);
-    res.status(500).json({ error: 'Ошибка при старте Google входа' });
+    console.error('❌ [Google Start] Error:', e.message);
+    console.error('❌ [Google Start] Stack:', e.stack);
+    res.status(500).json({ error: 'Ошибка при старте Google входа', detail: e.message });
   }
 });
+
 app.post('/api/auth/google/verify', async (req, res) => {
+  console.log('🔐 [Google Verify] Request from origin:', req.headers.origin);
+  console.log('🔐 [Google Verify] Body:', req.body);
+  
   try {
     const { id_token, code } = req.body;
-    if (!id_token || !code) return res.status(400).json({ error: 'id_token и code обязательны' });
+    
+    if (!id_token || !code) {
+      console.warn('❌ [Google Verify] Missing id_token or code');
+      return res.status(400).json({ error: 'id_token и code обязательны' });
+    }
 
+    console.log('🔍 [Google Verify] Verifying token...');
     const payload = await verifyGoogleIdToken(id_token);
     const email = payload.email;
-    if (!email) return res.status(400).json({ error: 'Email не найден в токене' });
+    
+    if (!email) {
+      console.warn('❌ [Google Verify] No email in token');
+      return res.status(400).json({ error: 'Email не найден в токене' });
+    }
 
-    const [rows] = await db.query(SQL.select_email_otps_02, [email]);
+    console.log('🔍 [Google Verify] Checking OTP for:', email, '| Code:', code);
+    const [rows] = await db.query(`SELECT * FROM email_otps WHERE email = ?`, [email]);
     const row = rows?.[0];
-    if (!row) return res.status(400).json({ error: 'Код не запрошен или истёк' });
-    if (new Date(row.expires_at).getTime() < Date.now()) return res.status(400).json({ error: 'Код истёк, запросите новый' });
-    if (sha256(code) !== row.code_hash) return res.status(400).json({ error: 'Неверный код' });
+    
+    if (!row) {
+      console.warn('❌ [Google Verify] OTP not found for:', email);
+      return res.status(400).json({ error: 'Код не запрошен или истёк' });
+    }
+    
+    if (new Date(row.expires_at).getTime() < Date.now()) {
+      console.warn('❌ [Google Verify] OTP expired for:', email);
+      return res.status(400).json({ error: 'Код истёк, запросите новый' });
+    }
+    
+    if (sha256(code) !== row.code_hash) {
+      console.warn('❌ [Google Verify] Invalid code for:', email);
+      return res.status(400).json({ error: 'Неверный код' });
+    }
 
-    await db.query(SQL.delete_email_otps_02, [email]);
+    console.log('✅ [Google Verify] Code valid, cleaning up OTP');
+    await db.query(`DELETE FROM email_otps WHERE email = ?`, [email]);
 
     let user = await findUserByEmail(email);
     if (!user) {
+      console.log('👤 [Google Verify] Creating new user for:', email);
       user = await createUserByEmail({
         email,
         first_name: payload.given_name || '',
@@ -921,16 +976,22 @@ app.post('/api/auth/google/verify', async (req, res) => {
     }
 
     const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '7d' });
-    res.cookie('token', token, { httpOnly: true, sameSite: 'lax', maxAge: 7 * 24 * 60 * 60 * 1000 });
+    res.cookie('token', token, { 
+      httpOnly: true, 
+      sameSite: 'none', // ВАЖНО для cross-origin
+      secure: true,     // ВАЖНО для production
+      maxAge: 7 * 24 * 60 * 60 * 1000 
+    });
 
     const fullUser = await getUserById(user.id);
+    console.log('✅ [Google Verify] Success for:', email);
     res.json({ ok: true, user: fullUser });
   } catch (e) {
-    console.error('google/verify error:', e);
-    res.status(500).json({ error: 'Ошибка при подтверждении кода' });
+    console.error('❌ [Google Verify] Error:', e.message);
+    console.error('❌ [Google Verify] Stack:', e.stack);
+    res.status(500).json({ error: 'Ошибка при подтверждении кода', detail: e.message });
   }
 });
-
 /* ===== Phone linking + Phone OTP login ===== */
 app.post('/api/me/update-phone', requireAuth, async (req, res) => {
   try {
