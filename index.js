@@ -700,8 +700,6 @@ app.post('/api/register', async (req, res) => {
     console.error('Register error:', err);
     res.status(500).json({ error: 'Внутренняя ошибка сервера.', detail: err.message });
   }
-  const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '7d' });
-res.cookie('token', token, cookieOpts);
 });
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
@@ -723,8 +721,7 @@ app.post('/api/login', async (req, res) => {
     console.error('Login error:', err);
     res.status(500).json({ error: 'Внутренняя ошибка сервера.' });
   }
-  const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '7d' });
-res.cookie('token', token, cookieOpts);
+  
 });
 
 /* ===== Auth: email/password simple ===== */
@@ -948,8 +945,6 @@ app.post('/api/auth/google/verify', async (req, res) => {
     console.error('google/verify error:', e);
     res.status(500).json({ error: 'Ошибка при подтверждении кода' });
   }
-  const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '7d' });
-res.cookie('token', token, cookieOpts);
 });
 
 /* ===== Phone linking + Phone OTP login ===== */
