@@ -305,26 +305,39 @@ io.on('connection', (socket) => {
 });
 
 /* ===== MySQL ===== */
-const db = mysql.createPool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASS,
-  database: process.env.DB_NAME,
+/* ===== MySQL (единый пул с портом и fallback на MYSQL* переменные) ===== */
+const DB_OPTS = {
+  host: process.env.DB_HOST || process.env.MYSQLHOST || '127.0.0.1',
+  port: Number(process.env.DB_PORT || process.env.MYSQLPORT || 3306), // <— ВАЖНО
+  user: process.env.DB_USER || process.env.MYSQLUSER || 'root',
+  password: process.env.DB_PASS || process.env.MYSQLPASSWORD || process.env.DB_PASSWORD || '',
+  database: process.env.DB_NAME || process.env.MYSQLDATABASE || 'railway',
   waitForConnections: true,
   connectionLimit: 10,
   timezone: '+00:00',
-});
+  namedPlaceholders: true,
+  charset: 'utf8mb4_unicode_ci',
+};
 
+const db = mysql.createPool(DB_OPTS);
+
+// делаем один-единственный пул доступным глобально и под именем pool,
+// чтобы остальной код, где используется pool.query(...), тоже работал
+global.pool = db;
+const pool = db;
+
+// быстрая проверка соединения
 (async () => {
   try {
-    const [r] = await db.query(SQL.select_general);
-    console.log('Connected DB =', r[0].db);
+    const [[{ db: currentDb }]] = await db.query('SELECT DATABASE() AS db');
+    console.log(`✅ MySQL connected: ${DB_OPTS.host}:${DB_OPTS.port} / ${currentDb}`);
   } catch (e) {
     console.error('DB ping failed:', e.message || e);
   }
 })();
 
-const DB_NAME = process.env.DB_NAME;
+const DB_NAME = DB_OPTS.database;
+
 
 async function ensureUsersExtraSchema() {
   try {
@@ -475,34 +488,6 @@ function requireApprovedSeller(req, res, next) {
 }
 // === MySQL pool ensure
 
-let pool = global.pool;
-
-// пробуем найти существующий пул под другими именами
-if (!pool) {
-  pool =
-    (typeof db !== 'undefined' && db) ||
-    (typeof mysqlPool !== 'undefined' && mysqlPool) ||
-    (typeof connection !== 'undefined' && connection) ||
-    (typeof conn !== 'undefined' && conn) ||
-    null;
-}
-
-// если всё же нет — создаём свой
-if (!pool) {
-  pool = mysql.createPool({
-    host: process.env.DB_HOST || '127.0.0.1',
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'myshopdb',
-    waitForConnections: true,
-    connectionLimit: 10,
-    namedPlaceholders: true,
-    charset: 'utf8mb4_unicode_ci',
-  });
-}
-
-// делаем пул доступным глобально (один на процесс)
-global.pool = pool;
 
 /* ===== Ensure schemas ===== */
 async function ensureCategoriesSchema() {
@@ -3118,7 +3103,7 @@ app.get('/api/moder/cases/requests', async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit||20), 100);
     const offset = Math.max(Number(req.query.offset||0), 0);
-    const usersTable = await firstExistingTable(db, ['users','myshopdb.users']);
+    const usersTable = await firstExistingTable(db, ['users','railway.users']);
     const requestsTable = await firstExistingTable(db, ['seller_requests','shop_requests','seller_applications','applications','requests_open_shop']);
     let rows = [];
     if (requestsTable) {
@@ -3148,7 +3133,7 @@ app.get('/api/moder/cases/complaints', async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit||20), 100);
     const offset = Math.max(Number(req.query.offset||0), 0);
-    const usersTable = await firstExistingTable(db, ['users','myshopdb.users']);
+    const usersTable = await firstExistingTable(db, ['users','railway.users']);
     const complaintsTable = await firstExistingTable(db, ['complaints','product_complaints','reports','claims']);
     let rows = [];
     if (complaintsTable) {
@@ -3179,7 +3164,7 @@ app.get('/api/moder/cases/complaints', async (req, res) => {
 app.get('/api/moder/cases/requests/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const usersTable = await firstExistingTable(db, ['users','myshopdb.users']);
+    const usersTable = await firstExistingTable(db, ['users','railway.users']);
     const requestsTable = await firstExistingTable(db, ['seller_requests','shop_requests','seller_applications','applications','requests_open_shop']);
     if (!requestsTable) return res.status(404).json({ error:'not found' });
 
@@ -3215,7 +3200,7 @@ app.get('/api/moder/cases/requests/:id', async (req, res) => {
 app.get('/api/moder/cases/complaints/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const usersTable = await firstExistingTable(db, ['users','myshopdb.users']);
+    const usersTable = await firstExistingTable(db, ['users','railway.users']);
     const complaintsTable = await firstExistingTable(db, ['complaints','product_complaints','reports','claims']);
     if (!complaintsTable) return res.status(404).json({ error:'not found' });
 
