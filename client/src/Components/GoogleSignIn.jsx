@@ -1,5 +1,6 @@
+// GoogleSignIn.jsx
 import React, { useEffect, useRef, useState } from 'react';
-import axios from 'axios';
+import { http } from '../lib/http';
 import OtpModal from './OtpModal';
 import { useTranslation } from 'react-i18next';
 import '../Styles/GoogleSignIn.css';
@@ -13,33 +14,45 @@ export default function GoogleSignIn({ onSuccess }) {
   const [status, setStatus] = useState('init'); // init | ready | missingId | scriptError
 
   useEffect(() => {
-    const clientId = window.GOOGLE_CLIENT_ID || process.env.REACT_APP_GOOGLE_CLIENT_ID;
-    if (!clientId) { setStatus('missingId'); return; }
+    // CRA: берём из REACT_APP_GOOGLE_CLIENT_ID, также можно задать window.GOOGLE_CLIENT_ID
+    const clientId =
+      window.GOOGLE_CLIENT_ID ||
+      process.env.REACT_APP_GOOGLE_CLIENT_ID;
+
+    if (!clientId) {
+      setStatus('missingId');
+      return;
+    }
 
     function init() {
       try {
+        if (!window.google?.accounts?.id) {
+          setStatus('scriptError');
+          return;
+        }
         window.google.accounts.id.initialize({
           client_id: clientId,
           callback: handleCredentialResponse,
           ux_mode: 'popup',
           auto_select: false,
           itp_support: true,
-          context: 'signin'
+          context: 'signin',
         });
+
         if (btnRef.current) {
           window.google.accounts.id.renderButton(btnRef.current, {
             type: 'standard',
             theme: 'outline',
             size: 'large',
             text: 'signin_with',
-            logo_alignment: 'left'
+            logo_alignment: 'left',
           });
           btnRef.current.setAttribute('aria-label', t('google.signIn'));
           btnRef.current.setAttribute('title', t('google.signIn'));
         }
         setStatus('ready');
       } catch (e) {
-        console.error(e);
+        console.error('GSI init error', e);
         setStatus('scriptError');
       }
     }
@@ -47,7 +60,8 @@ export default function GoogleSignIn({ onSuccess }) {
     if (!window.google?.accounts?.id) {
       const s = document.createElement('script');
       s.src = 'https://accounts.google.com/gsi/client';
-      s.async = true; s.defer = true;
+      s.async = true;
+      s.defer = true;
       s.onload = init;
       s.onerror = () => setStatus('scriptError');
       document.body.appendChild(s);
@@ -59,18 +73,23 @@ export default function GoogleSignIn({ onSuccess }) {
 
   async function handleCredentialResponse(response) {
     try {
-      const id_token = response.credential;
+      const id_token = response?.credential;
+      if (!id_token) {
+        console.warn('No id_token from Google');
+        return;
+      }
       setIdToken(id_token);
-      const { data } = await axios.post(
-        '/api/auth/google/start',
-        { id_token, lang: i18n.language },
-        { withCredentials: true }
-      );
-      if (data.ok) {
+
+      const { data } = await http.post('/api/auth/google/start', {
+        id_token,
+        lang: i18n.language,
+      });
+
+      if (data?.ok) {
         setEmail(data.email);
         setShowModal(true);
       } else {
-        alert(data.error || t('google.errors.start'));
+        alert(data?.error || t('google.errors.start'));
       }
     } catch (e) {
       console.error(e);
@@ -80,17 +99,18 @@ export default function GoogleSignIn({ onSuccess }) {
 
   async function verify(code) {
     try {
-      const { data } = await axios.post(
-        '/api/auth/google/verify',
-        { id_token: idToken, code, lang: i18n.language },
-        { withCredentials: true }
-      );
-      if (data.ok) {
+      const { data } = await http.post('/api/auth/google/verify', {
+        id_token: idToken,
+        code,
+        lang: i18n.language,
+      });
+
+      if (data?.ok) {
         setShowModal(false);
         if (onSuccess) onSuccess(data.user);
         else window.location.reload();
       } else {
-        alert(data.error || t('google.errors.invalidCode'));
+        alert(data?.error || t('google.errors.invalidCode'));
       }
     } catch (e) {
       const msg = e?.response?.data?.error || t('google.errors.verifyGeneric');
@@ -103,14 +123,10 @@ export default function GoogleSignIn({ onSuccess }) {
     <>
       <div ref={btnRef} aria-label={t('google.signIn')} title={t('google.signIn')} />
       {status === 'missingId' && (
-        <div className="gs-status gs-error">
-          {t('google.missingClientId')}
-        </div>
+        <div className="gs-status gs-error">{t('google.missingClientId')}</div>
       )}
       {status === 'scriptError' && (
-        <div className="gs-status gs-error">
-          {t('google.scriptLoadError')}
-        </div>
+        <div className="gs-status gs-error">{t('google.scriptLoadError')}</div>
       )}
       {showModal && (
         <OtpModal
