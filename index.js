@@ -700,6 +700,7 @@ app.post('/api/register', async (req, res) => {
     console.error('Register error:', err);
     res.status(500).json({ error: 'Внутренняя ошибка сервера.', detail: err.message });
   }
+  res.cookie('token', token, { ...cookieOpts, maxAge: 7*24*60*60*1000 });
 });
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
@@ -721,7 +722,7 @@ app.post('/api/login', async (req, res) => {
     console.error('Login error:', err);
     res.status(500).json({ error: 'Внутренняя ошибка сервера.' });
   }
-  
+  res.cookie('token', token, { ...cookieOpts, maxAge: 7*24*60*60*1000 });
 });
 
 /* ===== Auth: email/password simple ===== */
@@ -754,6 +755,7 @@ app.post('/api/register-email', async (req, res) => {
     console.error('register-email error:', e);
     res.status(500).json({ error: e?.message || 'Ошибка регистрации.' });
   }
+  res.cookie('token', token, { ...cookieOpts, maxAge: 7*24*60*60*1000 });
 });
 app.post('/api/login-email', async (req, res) => {
   try {
@@ -776,6 +778,7 @@ app.post('/api/login-email', async (req, res) => {
     console.error('login-email error:', e);
     res.status(500).json({ error: 'Ошибка входа.' });
   }
+  res.cookie('token', token, { ...cookieOpts, maxAge: 7*24*60*60*1000 });
 });
 
 /* ===== Email registration with OTP (3 steps) ===== */
@@ -945,6 +948,7 @@ app.post('/api/auth/google/verify', async (req, res) => {
     console.error('google/verify error:', e);
     res.status(500).json({ error: 'Ошибка при подтверждении кода' });
   }
+  res.cookie('token', token, { ...cookieOpts, maxAge: 7*24*60*60*1000 });
 });
 
 /* ===== Phone linking + Phone OTP login ===== */
@@ -1034,6 +1038,7 @@ app.post('/api/auth/phone/verify', async (req, res) => {
     console.error('phone/verify error:', e);
     res.status(500).json({ error: 'Ошибка подтверждения кода' });
   }
+  res.cookie('token', token, { ...cookieOpts, maxAge: 7*24*60*60*1000 });
 });
 
 /* ===== Profile & session ===== */
