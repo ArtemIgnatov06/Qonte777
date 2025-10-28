@@ -364,6 +364,18 @@ async function ensureUsersExtraSchema() {
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_jwt_secret';
 
+
+
+app.set('trust proxy', 1); // за CDN/прокси на Railway это полезно
+
+const isProd = process.env.NODE_ENV === 'production';
+const cookieOpts = {
+  httpOnly: true,
+  secure: isProd,           // на проде ставим флаг Secure
+  sameSite: isProd ? 'none' : 'lax', // на проде нужен None
+  path: '/'
+};
+
 /* ====== OpenRouter (AI) ====== */
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'mistralai/mistral-7b-instruct:free';
@@ -448,10 +460,13 @@ async function sendOtpSms(to, code) {
   console.log('📲 SMS отправлено:', resp.sid);
 }
 async function verifyGoogleIdToken(idToken) {
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  if (!clientId) throw new Error('GOOGLE_CLIENT_ID не задан в .env');
-  const client = new OAuth2Client(clientId);
-  const ticket = await client.verifyIdToken({ idToken, audience: clientId });
+  const raw = process.env.GOOGLE_CLIENT_ID || '';
+  const audiences = raw.split(',').map(s => s.trim()).filter(Boolean);
+  if (!audiences.length) throw new Error('GOOGLE_CLIENT_ID не задан в .env');
+
+  // OAuth2Client может быть без clientId — главное передать audience
+  const client = new OAuth2Client();
+  const ticket = await client.verifyIdToken({ idToken, audience: audiences });
   return ticket.getPayload();
 }
 
@@ -685,6 +700,8 @@ app.post('/api/register', async (req, res) => {
     console.error('Register error:', err);
     res.status(500).json({ error: 'Внутренняя ошибка сервера.', detail: err.message });
   }
+  const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '7d' });
+res.cookie('token', token, cookieOpts);
 });
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
@@ -706,6 +723,8 @@ app.post('/api/login', async (req, res) => {
     console.error('Login error:', err);
     res.status(500).json({ error: 'Внутренняя ошибка сервера.' });
   }
+  const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '7d' });
+res.cookie('token', token, cookieOpts);
 });
 
 /* ===== Auth: email/password simple ===== */
@@ -870,104 +889,49 @@ app.post('/api/register-email/finish', async (req, res) => {
 });
 
 /* ===== Google OAuth + Email OTP ===== */
-/* ===== Google OAuth + Email OTP (ИСПРАВЛЕННАЯ ВЕРСИЯ) ===== */
 app.post('/api/auth/google/start', async (req, res) => {
-  console.log('🔐 [Google Start] Request from origin:', req.headers.origin);
-  console.log('🔐 [Google Start] Body:', req.body);
-  
   try {
     const { id_token } = req.body;
-    
-    if (!id_token) {
-      console.warn('❌ [Google Start] Missing id_token');
-      return res.status(400).json({ error: 'id_token is required' });
-    }
-
-    if (!process.env.GOOGLE_CLIENT_ID) {
-      console.error('❌ [Google Start] GOOGLE_CLIENT_ID not set!');
-      return res.status(500).json({ error: 'Google auth not configured' });
-    }
-
-    console.log('🔍 [Google Start] Verifying token...');
+    if (!id_token) return res.status(400).json({ error: 'id_token is required' });
     const payload = await verifyGoogleIdToken(id_token);
     const email = payload.email;
-    
-    if (!email) {
-      console.warn('❌ [Google Start] No email in token payload');
-      return res.status(400).json({ error: 'Email не найден в токене' });
-    }
-
-    console.log('✅ [Google Start] Token verified for:', email);
+    if (!email) return res.status(400).json({ error: 'Email не найден в токене' });
 
     const code = random6();
     const hash = sha256(code);
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
     await db.query(
-      `INSERT INTO email_otps (email, code_hash, expires_at)
-       VALUES (?, ?, ?)
-       ON DUPLICATE KEY UPDATE code_hash = VALUES(code_hash), expires_at = VALUES(expires_at)`,
+      SQL.insert_general_04,
       [email, hash, expiresAt]
     );
 
-    console.log('📧 [Google Start] Sending OTP to:', email, '| Code:', code);
     await sendOtpEmail(email, code);
-    
-    console.log('✅ [Google Start] Success for:', email);
     res.json({ ok: true, email });
   } catch (e) {
-    console.error('❌ [Google Start] Error:', e.message);
-    console.error('❌ [Google Start] Stack:', e.stack);
-    res.status(500).json({ error: 'Ошибка при старте Google входа', detail: e.message });
+    console.error('google/start error:', e);
+    res.status(500).json({ error: 'Ошибка при старте Google входа' });
   }
 });
-
 app.post('/api/auth/google/verify', async (req, res) => {
-  console.log('🔐 [Google Verify] Request from origin:', req.headers.origin);
-  console.log('🔐 [Google Verify] Body:', req.body);
-  
   try {
     const { id_token, code } = req.body;
-    
-    if (!id_token || !code) {
-      console.warn('❌ [Google Verify] Missing id_token or code');
-      return res.status(400).json({ error: 'id_token и code обязательны' });
-    }
+    if (!id_token || !code) return res.status(400).json({ error: 'id_token и code обязательны' });
 
-    console.log('🔍 [Google Verify] Verifying token...');
     const payload = await verifyGoogleIdToken(id_token);
     const email = payload.email;
-    
-    if (!email) {
-      console.warn('❌ [Google Verify] No email in token');
-      return res.status(400).json({ error: 'Email не найден в токене' });
-    }
+    if (!email) return res.status(400).json({ error: 'Email не найден в токене' });
 
-    console.log('🔍 [Google Verify] Checking OTP for:', email, '| Code:', code);
-    const [rows] = await db.query(`SELECT * FROM email_otps WHERE email = ?`, [email]);
+    const [rows] = await db.query(SQL.select_email_otps_02, [email]);
     const row = rows?.[0];
-    
-    if (!row) {
-      console.warn('❌ [Google Verify] OTP not found for:', email);
-      return res.status(400).json({ error: 'Код не запрошен или истёк' });
-    }
-    
-    if (new Date(row.expires_at).getTime() < Date.now()) {
-      console.warn('❌ [Google Verify] OTP expired for:', email);
-      return res.status(400).json({ error: 'Код истёк, запросите новый' });
-    }
-    
-    if (sha256(code) !== row.code_hash) {
-      console.warn('❌ [Google Verify] Invalid code for:', email);
-      return res.status(400).json({ error: 'Неверный код' });
-    }
+    if (!row) return res.status(400).json({ error: 'Код не запрошен или истёк' });
+    if (new Date(row.expires_at).getTime() < Date.now()) return res.status(400).json({ error: 'Код истёк, запросите новый' });
+    if (sha256(code) !== row.code_hash) return res.status(400).json({ error: 'Неверный код' });
 
-    console.log('✅ [Google Verify] Code valid, cleaning up OTP');
-    await db.query(`DELETE FROM email_otps WHERE email = ?`, [email]);
+    await db.query(SQL.delete_email_otps_02, [email]);
 
     let user = await findUserByEmail(email);
     if (!user) {
-      console.log('👤 [Google Verify] Creating new user for:', email);
       user = await createUserByEmail({
         email,
         first_name: payload.given_name || '',
@@ -976,22 +940,18 @@ app.post('/api/auth/google/verify', async (req, res) => {
     }
 
     const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '7d' });
-    res.cookie('token', token, { 
-      httpOnly: true, 
-      sameSite: 'none', // ВАЖНО для cross-origin
-      secure: true,     // ВАЖНО для production
-      maxAge: 7 * 24 * 60 * 60 * 1000 
-    });
+    res.cookie('token', token, { httpOnly: true, sameSite: 'lax', maxAge: 7 * 24 * 60 * 60 * 1000 });
 
     const fullUser = await getUserById(user.id);
-    console.log('✅ [Google Verify] Success for:', email);
     res.json({ ok: true, user: fullUser });
   } catch (e) {
-    console.error('❌ [Google Verify] Error:', e.message);
-    console.error('❌ [Google Verify] Stack:', e.stack);
-    res.status(500).json({ error: 'Ошибка при подтверждении кода', detail: e.message });
+    console.error('google/verify error:', e);
+    res.status(500).json({ error: 'Ошибка при подтверждении кода' });
   }
+  const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '7d' });
+res.cookie('token', token, cookieOpts);
 });
+
 /* ===== Phone linking + Phone OTP login ===== */
 app.post('/api/me/update-phone', requireAuth, async (req, res) => {
   try {
